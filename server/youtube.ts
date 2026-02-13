@@ -254,6 +254,50 @@ const isBotGateError = (message: string): boolean => {
     return m.includes('sign in') || m.includes('bot') || m.includes('captcha');
 };
 
+const parsePositiveIntEnv = (key: string, fallback: number): number => {
+    const raw = (process.env[key] || '').trim();
+    const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(6, parsed);
+};
+
+const parseNonNegativeIntEnv = (key: string, fallback: number): number => {
+    const raw = (process.env[key] || '').trim();
+    const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+    if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+    return Math.min(30, parsed);
+};
+
+const appendPolitenessArgs = (args: string[]): void => {
+    // Free reliability lever: slow down slightly to reduce rate-limit/bot triggers.
+    // Controlled via env vars so you can tune without redeploy.
+    const sleepMin = parseNonNegativeIntEnv('YTDLP_SLEEP_INTERVAL', 0);
+    const sleepMax = parseNonNegativeIntEnv('YTDLP_MAX_SLEEP_INTERVAL', 0);
+    if (sleepMin > 0) {
+        args.push('--sleep-interval', String(sleepMin));
+        if (sleepMax >= sleepMin) {
+            args.push('--max-sleep-interval', String(sleepMax));
+        }
+    }
+};
+
+let activeExtracts = 0;
+const extractWaiters: Array<() => void> = [];
+const withExtractSemaphore = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const max = parsePositiveIntEnv('YTDLP_MAX_CONCURRENT', 1);
+    if (activeExtracts >= max) {
+        await new Promise<void>((resolve) => extractWaiters.push(resolve));
+    }
+    activeExtracts += 1;
+    try {
+        return await fn();
+    } finally {
+        activeExtracts = Math.max(0, activeExtracts - 1);
+        const next = extractWaiters.shift();
+        if (next) next();
+    }
+};
+
 const pruneExpiredAudioCache = (): void => {
     const now = Date.now();
     for (const [key, entry] of audioCache) {
@@ -430,6 +474,7 @@ export const searchYoutubeVideos = async (query: string, maxResults = 8): Promis
                     '--no-warnings',
                     '--extractor-args', `youtube:player_client=${client}`,
                 ];
+                appendPolitenessArgs(args);
                 if (cookieFile) {
                     args.push('--cookies', cookieFile);
                 }
@@ -496,7 +541,7 @@ export const extractYoutubeAudio = async (
         return await inflight;
     }
 
-    const task = (async (): Promise<{ buffer: Buffer; contentType: string }> => {
+    const task = withExtractSemaphore(async (): Promise<{ buffer: Buffer; contentType: string }> => {
         if (!ytDlpWrap) {
             await initYtDlp();
         }
@@ -595,7 +640,7 @@ export const extractYoutubeAudio = async (
             throw new Error('서버에 브라우저 쿠키 프로필이 없어 쿠키 기반 추출을 사용할 수 없습니다. 쿠키 옵션 없이 재시도합니다.');
         }
         throw new Error(lastError?.message || '오디오 추출에 실패했습니다.');
-    })();
+    });
 
     inflightAudios.set(cacheKey, task);
     try {
@@ -634,6 +679,11 @@ const extractWithFfmpeg = (
             url,
             '--no-playlist',
             '--no-warnings',
+            ...(() => {
+                const extra: string[] = [];
+                appendPolitenessArgs(extra);
+                return extra;
+            })(),
             '--retries', '2',
             '--fragment-retries', '2',
             '--extractor-retries', '2',
@@ -760,6 +810,11 @@ const extractWithoutFfmpeg = (
             url,
             '--no-playlist',
             '--no-warnings',
+            ...(() => {
+                const extra: string[] = [];
+                appendPolitenessArgs(extra);
+                return extra;
+            })(),
             '--retries', '2',
             '--fragment-retries', '2',
             '--extractor-retries', '2',
