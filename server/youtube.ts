@@ -203,6 +203,15 @@ const getPlayerClients = (): string[] => {
     return fromEnv.length > 0 ? fromEnv : DEFAULT_PLAYER_CLIENTS;
 };
 
+const getYoutubeExtractorArgsExtra = (): string => (process.env.YTDLP_YOUTUBE_EXTRACTOR_ARGS || '').trim();
+const buildYoutubeExtractorArgs = (playerClient: string): string => {
+    const extra = getYoutubeExtractorArgsExtra();
+    // yt-dlp extractor-args format: "youtube:key=value;key2=value2"
+    return extra
+        ? `youtube:player_client=${playerClient};${extra}`
+        : `youtube:player_client=${playerClient}`;
+};
+
 const getCookieBrowsers = (): Array<'chrome' | 'edge' | 'firefox'> => {
     const fromEnv = parseCsvEnv(process.env.YTDLP_COOKIE_BROWSERS).map(v => v.toLowerCase());
     return fromEnv
@@ -472,7 +481,7 @@ export const searchYoutubeVideos = async (query: string, maxResults = 8): Promis
                     '--skip-download',
                     '--no-playlist',
                     '--no-warnings',
-                    '--extractor-args', `youtube:player_client=${client}`,
+                    '--extractor-args', buildYoutubeExtractorArgs(client),
                 ];
                 appendPolitenessArgs(args);
                 if (cookieFile) {
@@ -690,7 +699,7 @@ const extractWithFfmpeg = (
             '--geo-bypass',
             '--force-ipv4',
             '--socket-timeout', '15',
-            '--extractor-args', `youtube:player_client=${playerClient}`,
+             '--extractor-args', buildYoutubeExtractorArgs(playerClient),
             '-f', 'bestaudio*/bestaudio/best',
             '--extract-audio',
             '--audio-format', 'mp3',
@@ -821,7 +830,7 @@ const extractWithoutFfmpeg = (
             '--geo-bypass',
             '--force-ipv4',
             '--socket-timeout', '15',
-            '--extractor-args', `youtube:player_client=${playerClient}`,
+            '--extractor-args', buildYoutubeExtractorArgs(playerClient),
             '-f', formatSelector,
             '-o', '-',
         ];
