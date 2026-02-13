@@ -687,6 +687,17 @@ const initApp = async (): Promise<void> => {
             const message = err.message || '알 수 없는 오류';
             const lower = message.toLowerCase();
             const botGate = lower.includes('봇') || lower.includes('sign in') || lower.includes('captcha') || lower.includes('bot');
+            if (botGate) {
+                const details = document.getElementById('youtube-cookies-details') as HTMLDetailsElement | null;
+                if (details) {
+                    details.open = true;
+                    try {
+                        details.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    } catch {
+                        // noop
+                    }
+                }
+            }
             const hint = botGate
                 ? '팁: 이건 YouTube가 서버(클라우드 IP)를 봇으로 판단한 케이스입니다. 다른 영상으로 시도하거나, 로컬 mp3를 사용하세요. (서버에 쿠키를 넣으면 성공률을 올릴 수 있음)'
                 : '팁: YouTube는 차단/실패가 잦습니다. 로컬 mp3 파일을 선택하거나 드래그해서 플레이해보세요! (로컬 파일은 100% 됨)';
