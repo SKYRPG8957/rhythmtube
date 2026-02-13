@@ -9,3 +9,4 @@ yt-dlp-wiki-src/
 
 # local tooling state
 .claude/
+.sisyphus/
