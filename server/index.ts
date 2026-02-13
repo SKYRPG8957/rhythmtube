@@ -113,12 +113,21 @@ app.post('/api/youtube/audio', async (req, res) => {
 });
 
 if (fs.existsSync(DIST_DIR)) {
-    app.use(express.static(DIST_DIR));
+    app.use(express.static(DIST_DIR, {
+        setHeaders(res, filePath) {
+            if (filePath.endsWith('index.html')) {
+                res.setHeader('Cache-Control', 'no-store');
+            } else if (filePath.includes(`${path.sep}assets${path.sep}`) || filePath.includes('/assets/')) {
+                res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            }
+        },
+    }));
     app.get('*', (req, res, next) => {
         if (req.path.startsWith('/api/')) {
             next();
             return;
         }
+        res.setHeader('Cache-Control', 'no-store');
         res.sendFile(path.join(DIST_DIR, 'index.html'));
     });
 }

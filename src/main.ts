@@ -610,7 +610,8 @@ const initApp = async (): Promise<void> => {
                             const errData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
                             const msg = errData.error || `오디오 추출 실패 (HTTP ${response.status})`;
                             const e = new Error(msg) as Error & { retryable?: boolean };
-                            e.retryable = response.status >= 500 || response.status === 429 || response.status === 408;
+                            // 429(봇/로그인 차단)은 재시도해도 대부분 해결되지 않음 → 즉시 종료
+                            e.retryable = response.status >= 500 || response.status === 408;
                             throw e;
                         }
                         const ct = (response.headers.get('content-type') || '').toLowerCase();
@@ -669,7 +670,13 @@ const initApp = async (): Promise<void> => {
         } catch (err: any) {
             loadingOverlay.hide();
             console.error(err);
-            alert(`YouTube 오디오 로드 실패.\n\n원인: ${err.message || '알 수 없는 오류'}\n\n팁: YouTube는 차단이 잦습니다. 가지고 있는 mp3 파일을 선택하거나 드래그해서 플레이해보세요! (로컬 파일은 100% 됨)`);
+            const message = err.message || '알 수 없는 오류';
+            const lower = message.toLowerCase();
+            const botGate = lower.includes('봇') || lower.includes('sign in') || lower.includes('captcha') || lower.includes('bot');
+            const hint = botGate
+                ? '팁: 이건 YouTube가 서버(클라우드 IP)를 봇으로 판단한 케이스입니다. 다른 영상으로 시도하거나, 로컬 mp3를 사용하세요. (서버에 쿠키를 넣으면 성공률을 올릴 수 있음)'
+                : '팁: YouTube는 차단/실패가 잦습니다. 로컬 mp3 파일을 선택하거나 드래그해서 플레이해보세요! (로컬 파일은 100% 됨)';
+            alert(`YouTube 오디오 로드 실패.\n\n원인: ${message}\n\n${hint}`);
         }
     };
 

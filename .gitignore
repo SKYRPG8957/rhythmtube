@@ -1,6 +1,8 @@
 node_modules/
 dist/
 tmp-*/
+yt-dlp-src/
+yt-dlp-wiki-src/
 .DS_Store
 *.log
 *.tmp

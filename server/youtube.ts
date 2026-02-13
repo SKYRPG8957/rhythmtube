@@ -4,6 +4,7 @@ console.log('🚀 YouTube Audio Module Loaded (v3 - MP3 Output)');
 import fs from 'fs';
 import path from 'path';
 import https from 'https';
+import os from 'os';
 import { execFile } from 'child_process';
 import { createRequire } from 'module';
 
@@ -178,6 +179,18 @@ const SEARCH_CACHE_MAX_ENTRIES = 64;
 const searchCache = new Map<string, SearchCacheEntry>();
 const inflightSearches = new Map<string, Promise<YoutubeSearchItem[]>>();
 
+interface AudioCacheEntry {
+    readonly expiresAt: number;
+    readonly buffer: Buffer;
+    readonly contentType: string;
+}
+
+const AUDIO_CACHE_TTL_MS = 8 * 60_000;
+const AUDIO_CACHE_MAX_ENTRIES = 6;
+const AUDIO_CACHE_MAX_BYTES = 28 * 1024 * 1024;
+const audioCache = new Map<string, AudioCacheEntry>();
+const inflightAudios = new Map<string, Promise<{ buffer: Buffer; contentType: string }>>();
+
 const parseCsvEnv = (value: string | undefined): string[] =>
     (value || '')
         .split(',')
@@ -196,9 +209,85 @@ const getCookieBrowsers = (): Array<'chrome' | 'edge' | 'firefox'> => {
         .filter((v): v is 'chrome' | 'edge' | 'firefox' => v === 'chrome' || v === 'edge' || v === 'firefox');
 };
 
+let cachedCookieFilePath: string | null | undefined;
+const getCookieFilePath = (): string | null => {
+    if (cachedCookieFilePath !== undefined) return cachedCookieFilePath;
+
+    const explicit = (process.env.YTDLP_COOKIES_PATH || '').trim();
+    if (explicit) {
+        cachedCookieFilePath = explicit;
+        return cachedCookieFilePath;
+    }
+
+    const b64 = (process.env.YTDLP_COOKIES_B64 || '').trim();
+    if (!b64) {
+        cachedCookieFilePath = null;
+        return null;
+    }
+
+    try {
+        const raw = Buffer.from(b64, 'base64').toString('utf8');
+        const normalized = raw.replace(/\r\n/g, '\n');
+        const filePath = path.join(os.tmpdir(), 'rhythmtube-ytdlp-cookies.txt');
+        fs.writeFileSync(filePath, normalized, { mode: 0o600 });
+        cachedCookieFilePath = filePath;
+        return filePath;
+    } catch {
+        cachedCookieFilePath = null;
+        return null;
+    }
+};
+
+const appendCookieArgs = (args: string[], cookieBrowser?: 'chrome' | 'edge' | 'firefox'): void => {
+    const cookieFile = getCookieFilePath();
+    if (cookieFile) {
+        args.push('--cookies', cookieFile);
+        return;
+    }
+    if (cookieBrowser) {
+        args.push('--cookies-from-browser', cookieBrowser);
+    }
+};
+
 const isBotGateError = (message: string): boolean => {
     const m = message.toLowerCase();
     return m.includes('sign in') || m.includes('bot') || m.includes('captcha');
+};
+
+const pruneExpiredAudioCache = (): void => {
+    const now = Date.now();
+    for (const [key, entry] of audioCache) {
+        if (entry.expiresAt <= now) {
+            audioCache.delete(key);
+        }
+    }
+};
+
+const getCachedAudio = (cacheKey: string): { buffer: Buffer; contentType: string } | null => {
+    const cached = audioCache.get(cacheKey);
+    if (!cached) return null;
+    if (cached.expiresAt <= Date.now()) {
+        audioCache.delete(cacheKey);
+        return null;
+    }
+    return { buffer: cached.buffer, contentType: cached.contentType };
+};
+
+const setCachedAudio = (cacheKey: string, result: { buffer: Buffer; contentType: string }): void => {
+    if (result.buffer.length > AUDIO_CACHE_MAX_BYTES) return;
+
+    pruneExpiredAudioCache();
+    if (audioCache.size >= AUDIO_CACHE_MAX_ENTRIES) {
+        const firstKey = audioCache.keys().next().value;
+        if (typeof firstKey === 'string') {
+            audioCache.delete(firstKey);
+        }
+    }
+    audioCache.set(cacheKey, {
+        expiresAt: Date.now() + AUDIO_CACHE_TTL_MS,
+        buffer: result.buffer,
+        contentType: result.contentType,
+    });
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -326,20 +415,25 @@ export const searchYoutubeVideos = async (query: string, maxResults = 8): Promis
     }
 
     const attempts = getPlayerClients();
+    const cookieFile = getCookieFilePath();
     const task = (async (): Promise<YoutubeSearchItem[]> => {
         let lastErr: Error | null = null;
         let sawBotGate = false;
 
         for (const client of attempts) {
             try {
-                const raw = await runYtDlpJson([
+                const args = [
                     `ytsearch${safeMax}:${trimmed}`,
                     '--dump-single-json',
                     '--skip-download',
                     '--no-playlist',
                     '--no-warnings',
                     '--extractor-args', `youtube:player_client=${client}`,
-                ], 30000);
+                ];
+                if (cookieFile) {
+                    args.push('--cookies', cookieFile);
+                }
+                const raw = await runYtDlpJson(args, 30000);
                 if (!isRecord(raw)) {
                     setCachedSearch(cacheKey, []);
                     return [];
@@ -391,100 +485,126 @@ export const extractYoutubeAudio = async (
     url: string,
     opts?: { preferMp4Only?: boolean }
 ): Promise<{ buffer: Buffer; contentType: string }> => {
-    if (!ytDlpWrap) {
-        await initYtDlp();
+    const cacheKey = `${opts?.preferMp4Only ? 'mp4' : 'any'}:${url}`;
+    const cached = getCachedAudio(cacheKey);
+    if (cached) {
+        return cached;
     }
 
-    const hasFfmpeg = await checkFfmpeg();
-    const version = await runYtDlpVersion();
-    console.log(`[YouTube] yt-dlp version: ${version}, ffmpeg available: ${hasFfmpeg}`);
+    const inflight = inflightAudios.get(cacheKey);
+    if (inflight) {
+        return await inflight;
+    }
 
-    const playerClients = getPlayerClients();
-    const cookieBrowsers = getCookieBrowsers();
+    const task = (async (): Promise<{ buffer: Buffer; contentType: string }> => {
+        if (!ytDlpWrap) {
+            await initYtDlp();
+        }
 
-    // 차단/봇감지 대응: 여러 전략을 순차 시도
-    const attempts: Array<{ name: string; run: () => Promise<{ buffer: Buffer; contentType: string }> }> = [];
-    if (hasFfmpeg) {
+        const hasFfmpeg = await checkFfmpeg();
+        const version = await runYtDlpVersion();
+        console.log(`[YouTube] yt-dlp version: ${version}, ffmpeg available: ${hasFfmpeg}`);
+
+        const playerClients = getPlayerClients();
+        const cookieBrowsers = getCookieBrowsers();
+
+        // 차단/봇감지 대응: 여러 전략을 순차 시도
+        const attempts: Array<{ name: string; run: () => Promise<{ buffer: Buffer; contentType: string }> }> = [];
+        if (hasFfmpeg) {
+            for (const client of playerClients) {
+                attempts.push({ name: `ffmpeg+${client}-client`, run: () => extractWithFfmpeg(url, client) });
+            }
+            for (const browser of cookieBrowsers) {
+                for (const client of playerClients) {
+                    attempts.push({
+                        name: `ffmpeg+${client}+${browser}-cookies`,
+                        run: () => extractWithFfmpeg(url, client, browser),
+                    });
+                }
+            }
+        }
         for (const client of playerClients) {
-            attempts.push({ name: `ffmpeg+${client}-client`, run: () => extractWithFfmpeg(url, client) });
+            attempts.push({
+                name: `direct+${client}-client`,
+                run: () => extractWithoutFfmpeg(url, client, undefined, opts?.preferMp4Only),
+            });
         }
         for (const browser of cookieBrowsers) {
             for (const client of playerClients) {
                 attempts.push({
-                    name: `ffmpeg+${client}+${browser}-cookies`,
-                    run: () => extractWithFfmpeg(url, client, browser),
+                    name: `direct+${client}+${browser}-cookies`,
+                    run: () => extractWithoutFfmpeg(url, client, browser, opts?.preferMp4Only),
                 });
             }
         }
-    }
-    for (const client of playerClients) {
-        attempts.push({
-            name: `direct+${client}-client`,
-            run: () => extractWithoutFfmpeg(url, client, undefined, opts?.preferMp4Only),
-        });
-    }
-    for (const browser of cookieBrowsers) {
-        for (const client of playerClients) {
-            attempts.push({
-                name: `direct+${client}+${browser}-cookies`,
-                run: () => extractWithoutFfmpeg(url, client, browser, opts?.preferMp4Only),
-            });
-        }
-    }
 
-    let lastError: Error | null = null;
-    let sawBotGate = false;
-    let sawCookieDatabaseMissing = false;
-    let updatedOnce = false;
-    for (let round = 0; round < 2; round++) {
-        for (const attempt of attempts) {
-            try {
-                console.log(`[YouTube] attempt: ${attempt.name}${round > 0 ? ' (retry)' : ''}`);
-                const result = await attempt.run();
-                console.log(`[YouTube] success: ${attempt.name}`);
-                return result;
-            } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                console.warn(`[YouTube] failed: ${attempt.name} -> ${message}`);
-                lastError = err instanceof Error ? err : new Error(message);
-                const lower = message.toLowerCase();
-                if (isBotGateError(lower)) {
-                    sawBotGate = true;
+        let lastError: Error | null = null;
+        let sawBotGate = false;
+        let sawCookieDatabaseMissing = false;
+        let updatedOnce = false;
+        for (let round = 0; round < 2; round++) {
+            for (const attempt of attempts) {
+                try {
+                    console.log(`[YouTube] attempt: ${attempt.name}${round > 0 ? ' (retry)' : ''}`);
+                    const result = await attempt.run();
+                    console.log(`[YouTube] success: ${attempt.name}`);
+                    return result;
+                } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    console.warn(`[YouTube] failed: ${attempt.name} -> ${message}`);
+                    lastError = err instanceof Error ? err : new Error(message);
+                    const lower = message.toLowerCase();
+                    if (isBotGateError(lower)) {
+                        sawBotGate = true;
+                        break;
+                    }
+                    if (lower.includes('could not find') && lower.includes('cookies database')) {
+                        sawCookieDatabaseMissing = true;
+                    }
                 }
-                if (lower.includes('could not find') && lower.includes('cookies database')) {
-                    sawCookieDatabaseMissing = true;
+            }
+
+            // 봇/로그인 요구는 다른 전략을 돌려도 거의 해결되지 않음 (불필요한 트래픽 감소)
+            if (sawBotGate) break;
+            if (updatedOnce) break;
+            const message = (lastError?.message || '').toLowerCase();
+            const shouldUpdate = message.includes('signature')
+                || message.includes('http error 403')
+                || message.includes('unable to extract')
+                || message.includes('requested format is not available')
+                || message.includes('unsupported url');
+            if (!shouldUpdate) break;
+            console.log('[YouTube] updating yt-dlp binary and retrying...');
+            await updateYtDlpBinary();
+            updatedOnce = true;
+            await initYtDlp();
+            const newVersion = await runYtDlpVersion();
+            console.log(`[YouTube] yt-dlp updated version: ${newVersion}`);
+            const ffmpegNow = await checkFfmpeg();
+            if (ffmpegNow && !hasFfmpeg) {
+                for (const client of playerClients.slice().reverse()) {
+                    attempts.unshift({ name: `ffmpeg+${client}-client(retry)`, run: () => extractWithFfmpeg(url, client) });
                 }
             }
         }
-        if (updatedOnce) break;
-        const message = (lastError?.message || '').toLowerCase();
-        const shouldUpdate = message.includes('signature')
-            || message.includes('http error 403')
-            || message.includes('unable to extract')
-            || message.includes('requested format is not available')
-            || message.includes('unsupported url');
-        if (!shouldUpdate) break;
-        console.log('[YouTube] updating yt-dlp binary and retrying...');
-        await updateYtDlpBinary();
-        updatedOnce = true;
-        await initYtDlp();
-        const newVersion = await runYtDlpVersion();
-        console.log(`[YouTube] yt-dlp updated version: ${newVersion}`);
-        const ffmpegNow = await checkFfmpeg();
-        if (ffmpegNow && !hasFfmpeg) {
-            for (const client of playerClients.slice().reverse()) {
-                attempts.unshift({ name: `ffmpeg+${client}-client(retry)`, run: () => extractWithFfmpeg(url, client) });
-            }
-        }
-    }
 
-    if (sawBotGate) {
-        throw new Error('YouTube에서 봇/로그인 확인을 요구했습니다. 다른 영상 URL로 재시도하거나 잠시 후 다시 시도해주세요.');
+        if (sawBotGate) {
+            throw new Error('YouTube에서 봇/로그인 확인을 요구했습니다. 다른 영상 URL로 재시도하거나 잠시 후 다시 시도해주세요.');
+        }
+        if (sawCookieDatabaseMissing && cookieBrowsers.length > 0) {
+            throw new Error('서버에 브라우저 쿠키 프로필이 없어 쿠키 기반 추출을 사용할 수 없습니다. 쿠키 옵션 없이 재시도합니다.');
+        }
+        throw new Error(lastError?.message || '오디오 추출에 실패했습니다.');
+    })();
+
+    inflightAudios.set(cacheKey, task);
+    try {
+        const result = await task;
+        setCachedAudio(cacheKey, result);
+        return result;
+    } finally {
+        inflightAudios.delete(cacheKey);
     }
-    if (sawCookieDatabaseMissing && cookieBrowsers.length > 0) {
-        throw new Error('서버에 브라우저 쿠키 프로필이 없어 쿠키 기반 추출을 사용할 수 없습니다. 쿠키 옵션 없이 재시도합니다.');
-    }
-    throw new Error(lastError?.message || '오디오 추출에 실패했습니다.');
 };
 
 /** ffmpeg를 이용한 MP3 변환 추출 */
@@ -527,9 +647,7 @@ const extractWithFfmpeg = (
             '--audio-quality', '192K',
             '-o', '-',
         ];
-        if (cookieBrowser) {
-            args.push('--cookies-from-browser', cookieBrowser);
-        }
+        appendCookieArgs(args, cookieBrowser);
         const proc = ytDlpWrap.exec(args);
 
         const stream = proc.ytDlpProcess?.stdout;
@@ -652,9 +770,7 @@ const extractWithoutFfmpeg = (
             '-f', formatSelector,
             '-o', '-',
         ];
-        if (cookieBrowser) {
-            args.push('--cookies-from-browser', cookieBrowser);
-        }
+        appendCookieArgs(args, cookieBrowser);
         const proc = ytDlpWrap.exec(args);
 
         const stream = proc.ytDlpProcess?.stdout;
