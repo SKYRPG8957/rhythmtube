@@ -1214,6 +1214,13 @@ export const createNoteManager = () => {
             ctx.fill();
         }
 
+        // separation outline: improves readability over bright roads
+        ctx.strokeStyle = `rgba(0,0,0,${(0.26 + proximity * 0.18).toFixed(3)})`;
+        ctx.lineWidth = 3.8;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius * 1.2, 0, Math.PI * 2);
+        ctx.stroke();
+
         ctx.strokeStyle = `rgba(255,255,255,${(0.28 + proximity * 0.25).toFixed(3)})`;
         ctx.lineWidth = 2.2;
         ctx.beginPath();

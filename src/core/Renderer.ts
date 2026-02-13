@@ -464,7 +464,7 @@ export const createRenderer = () => {
             ctx.fill();
         }
 
-        const textureCount = 32;
+        const textureCount = 22;
         for (let i = 0; i < textureCount; i++) {
             const t = (i / textureCount + scrollNorm * 0.25) % 1;
             const p = 1 - Math.pow(1 - t, 2.1);
@@ -481,7 +481,7 @@ export const createRenderer = () => {
         }
         ctx.restore();
 
-        const roadEdgeAlpha = 0.12 + state.beatPulse * 0.05 + comboDrive * 0.015;
+        const roadEdgeAlpha = 0.16 + state.beatPulse * 0.05 + comboDrive * 0.02;
         ctx.strokeStyle = `rgba(${themeColor}, ${roadEdgeAlpha.toFixed(3)})`;
         ctx.lineWidth = 1.6;
         ctx.beginPath();
@@ -1029,11 +1029,11 @@ export const createRenderer = () => {
             ctx.stroke();
 
             // lane sparkle
-            for (let x = CANVAS_WIDTH * JUDGE_LINE_X + 35; x < CANVAS_WIDTH; x += 120) {
+            for (let x = CANVAS_WIDTH * JUDGE_LINE_X + 35; x < CANVAS_WIDTH; x += 175) {
                 const seed = x + i * 123;
                 const pulse = (Math.sin(state.bgTime * 3 + seed * 0.017) + 1) * 0.5;
                 const laneTone = i === 0 ? '120, 224, 255' : '255, 136, 196';
-                ctx.fillStyle = `rgba(${laneTone},${0.04 + pulse * 0.1})`;
+                ctx.fillStyle = `rgba(${laneTone},${0.03 + pulse * 0.085})`;
                 ctx.beginPath();
                 ctx.arc(x, y, 2 + pulse * 2, 0, Math.PI * 2);
                 ctx.fill();
