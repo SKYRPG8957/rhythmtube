@@ -96,6 +96,15 @@ const initApp = async (): Promise<void> => {
     const API_BASE_RAW = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
     const API_BASE = API_BASE_RAW.endsWith('/') ? API_BASE_RAW.slice(0, -1) : API_BASE_RAW;
     const apiUrl = (path: string): string => `${API_BASE}${path}`;
+
+    const getYoutubeCookieHandle = (): string | null => {
+        try {
+            return sessionStorage.getItem('rhythmtube_youtube_cookie_handle_session')
+                || localStorage.getItem('rhythmtube_youtube_cookie_handle');
+        } catch {
+            return null;
+        }
+    };
     const setVideoPausedVisual = (paused: boolean): void => {
         const videoBg = document.getElementById('video-background') as HTMLElement | null;
         if (!videoBg) return;
@@ -599,10 +608,15 @@ const initApp = async (): Promise<void> => {
                     const timeout = setTimeout(() => controller.abort(), 95000);
                     try {
                         const isAppleLike = /iPhone|iPad|iPod|Macintosh/i.test(navigator.userAgent);
+                        const cookieHandle = getYoutubeCookieHandle();
                         const response = await fetch(apiUrl('/api/youtube/audio'), {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ url: currentYoutubeUrl, preferMp4Only: isAppleLike }),
+                            body: JSON.stringify({
+                                url: currentYoutubeUrl,
+                                preferMp4Only: isAppleLike,
+                                cookieHandle: cookieHandle || undefined,
+                            }),
                             signal: controller.signal,
                         });
                         clearTimeout(timeout);

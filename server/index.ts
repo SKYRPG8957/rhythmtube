@@ -4,6 +4,7 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import { extractYoutubeAudio, searchYoutubeVideos } from './youtube';
 
 const app = express();
@@ -12,11 +13,68 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DIST_DIR = path.resolve(__dirname, '..', 'dist');
 
-app.use(cors());
+// CORS: allow only same-origin by default (this app is deployed as a single service)
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin) {
+            callback(null, true);
+            return;
+        }
+        // Allow localhost dev + same host
+        const allowed = [
+            'http://localhost:5173',
+            'http://127.0.0.1:5173',
+            'https://rhythmtube.onrender.com',
+        ];
+        if (allowed.includes(origin)) {
+            callback(null, true);
+            return;
+        }
+        callback(null, false);
+    },
+}));
 app.use(express.json());
 
 app.get('/healthz', (_req, res) => {
     res.json({ ok: true });
+});
+
+type CookieEntry = {
+    readonly expiresAt: number;
+    readonly cookiesTxt: string;
+};
+const COOKIE_TTL_MS = 20 * 60_000;
+const COOKIE_MAX_BYTES = 256 * 1024;
+const cookieStore = new Map<string, CookieEntry>();
+const pruneCookieStore = (): void => {
+    const now = Date.now();
+    for (const [key, entry] of cookieStore) {
+        if (entry.expiresAt <= now) {
+            cookieStore.delete(key);
+        }
+    }
+};
+const newCookieHandle = (): string => {
+    // High-entropy opaque token; no external deps
+    return `ck_${crypto.randomBytes(24).toString('base64url')}`;
+};
+
+/** Upload cookies.txt (Netscape format) for YouTube extraction */
+app.post('/api/youtube/cookies', express.text({ type: 'text/plain', limit: '256kb' }), (req, res) => {
+    pruneCookieStore();
+    const text = typeof req.body === 'string' ? req.body : '';
+    if (!text.trim()) {
+        res.status(400).json({ error: 'cookies.txt 내용이 필요합니다' });
+        return;
+    }
+    if (Buffer.byteLength(text, 'utf8') > COOKIE_MAX_BYTES) {
+        res.status(413).json({ error: 'cookies.txt가 너무 큽니다' });
+        return;
+    }
+    const handle = newCookieHandle();
+    const expiresAt = Date.now() + COOKIE_TTL_MS;
+    cookieStore.set(handle, { cookiesTxt: text, expiresAt });
+    res.status(201).json({ cookieHandle: handle, expiresAt });
 });
 
 const extractYoutubeId = (rawUrl: string): string | null => {
@@ -59,7 +117,7 @@ app.get('/api/youtube/search', async (req, res) => {
 
 /** YouTube 오디오 추출 엔드포인트 */
 app.post('/api/youtube/audio', async (req, res) => {
-    const { url, preferMp4Only } = req.body;
+    const { url, preferMp4Only, cookieHandle } = req.body as { url?: unknown; preferMp4Only?: unknown; cookieHandle?: unknown };
 
     // 입력 검증
     if (!url || typeof url !== 'string') {
@@ -90,8 +148,12 @@ app.post('/api/youtube/audio', async (req, res) => {
 
     try {
         const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        pruneCookieStore();
+        const cookieKey = typeof cookieHandle === 'string' ? cookieHandle : '';
+        const cookieEntry = cookieKey ? cookieStore.get(cookieKey) : undefined;
         const result = await extractYoutubeAudio(canonicalUrl, {
             preferMp4Only: !!preferMp4Only,
+            cookiesTxt: cookieEntry?.cookiesTxt ?? null,
         });
         res.set('Content-Type', result.contentType);
         res.set('Content-Length', String(result.buffer.length));

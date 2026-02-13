@@ -7,6 +7,9 @@ export interface SongSelectCallbacks {
     readonly onBack: () => void;
 }
 
+const COOKIE_HANDLE_STORAGE_SESSION = 'rhythmtube_youtube_cookie_handle_session';
+const COOKIE_HANDLE_STORAGE_PERSIST = 'rhythmtube_youtube_cookie_handle';
+
 interface YoutubeSearchItem {
     readonly id: string;
     readonly title: string;
@@ -61,6 +64,24 @@ export const createSongSelect = (
       />
     </div>
 
+    <details class="song-select__cookies" id="youtube-cookies-details">
+      <summary class="song-select__cookies-summary">YouTube 로그인 차단 해결 (선택)</summary>
+      <div class="song-select__cookies-body">
+        <div class="song-select__cookies-desc">
+          일부 영상은 서버가 봇으로 판단되어 실패합니다. 이 경우 YouTube 로그인 쿠키(cookies.txt)를 업로드하면 성공률이 올라갑니다.
+        </div>
+        <div class="song-select__cookies-row">
+          <input type="file" id="youtube-cookies-file" accept="text/plain,.txt" />
+          <button class="btn btn--secondary" id="youtube-cookies-upload" type="button">업로드</button>
+          <button class="btn" id="youtube-cookies-clear" type="button">삭제</button>
+        </div>
+        <label class="song-select__cookies-remember">
+          <input type="checkbox" id="youtube-cookies-remember" /> 이 기기에서 저장
+        </label>
+        <div class="song-select__cookies-status" id="youtube-cookies-status"></div>
+      </div>
+    </details>
+
     <div class="song-select__input-group">
       <label class="song-select__label">YouTube 검색</label>
       <div class="song-select__search-row">
@@ -103,6 +124,40 @@ export const createSongSelect = (
     const youtubeSearchStatus = container.querySelector('#youtube-search-status') as HTMLElement;
     const youtubeSearchResults = container.querySelector('#youtube-search-results') as HTMLElement;
 
+    const cookiesDetails = container.querySelector('#youtube-cookies-details') as HTMLDetailsElement;
+    const cookiesFileInput = container.querySelector('#youtube-cookies-file') as HTMLInputElement;
+    const cookiesUploadBtn = container.querySelector('#youtube-cookies-upload') as HTMLButtonElement;
+    const cookiesClearBtn = container.querySelector('#youtube-cookies-clear') as HTMLButtonElement;
+    const cookiesRemember = container.querySelector('#youtube-cookies-remember') as HTMLInputElement;
+    const cookiesStatus = container.querySelector('#youtube-cookies-status') as HTMLElement;
+
+    const getStoredCookieHandle = (): string | null => {
+        return sessionStorage.getItem(COOKIE_HANDLE_STORAGE_SESSION)
+            || localStorage.getItem(COOKIE_HANDLE_STORAGE_PERSIST);
+    };
+    const setStoredCookieHandle = (handle: string | null, remember: boolean): void => {
+        sessionStorage.removeItem(COOKIE_HANDLE_STORAGE_SESSION);
+        localStorage.removeItem(COOKIE_HANDLE_STORAGE_PERSIST);
+        if (!handle) return;
+        if (remember) {
+            localStorage.setItem(COOKIE_HANDLE_STORAGE_PERSIST, handle);
+        } else {
+            sessionStorage.setItem(COOKIE_HANDLE_STORAGE_SESSION, handle);
+        }
+    };
+    const setCookieStatus = (text: string, isError = false): void => {
+        cookiesStatus.textContent = text;
+        cookiesStatus.classList.toggle('error', isError);
+    };
+    const refreshCookieUi = (): void => {
+        const handle = getStoredCookieHandle();
+        if (handle) {
+            setCookieStatus('쿠키 설정됨 (일부 영상 성공률 증가)', false);
+        } else {
+            setCookieStatus('쿠키 없음', false);
+        }
+    };
+
     let selectedFile: File | null = null;
     let activeSearchToken = 0;
     let searchAbortController: AbortController | null = null;
@@ -141,6 +196,48 @@ export const createSongSelect = (
         youtubeInput.value = '';
     };
 
+    const uploadCookiesFile = async (): Promise<void> => {
+        const file = cookiesFileInput.files?.[0];
+        if (!file) {
+            setCookieStatus('cookies.txt 파일을 선택하세요.', true);
+            return;
+        }
+        if (file.size > 256 * 1024) {
+            setCookieStatus('쿠키 파일이 너무 큽니다 (256KB 제한).', true);
+            return;
+        }
+        cookiesUploadBtn.disabled = true;
+        setCookieStatus('쿠키 업로드 중...', false);
+        try {
+            const text = await file.text();
+            const response = await fetch(apiUrl('/api/youtube/cookies'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain' },
+                body: text,
+            });
+            const raw = await response.json().catch(() => ({} as unknown));
+            if (!response.ok) {
+                const msg = (typeof raw === 'object' && raw && 'error' in raw && typeof (raw as { error?: unknown }).error === 'string')
+                    ? (raw as { error: string }).error
+                    : `HTTP ${response.status}`;
+                throw new Error(msg);
+            }
+            const handle = (typeof raw === 'object' && raw && 'cookieHandle' in raw && typeof (raw as { cookieHandle?: unknown }).cookieHandle === 'string')
+                ? (raw as { cookieHandle: string }).cookieHandle
+                : '';
+            if (!handle) {
+                throw new Error('서버 응답이 올바르지 않습니다');
+            }
+            setStoredCookieHandle(handle, cookiesRemember.checked);
+            refreshCookieUi();
+        } catch (err) {
+            setCookieStatus(`업로드 실패: ${err instanceof Error ? err.message : '알 수 없는 오류'}`, true);
+            cookiesDetails.open = true;
+        } finally {
+            cookiesUploadBtn.disabled = false;
+        }
+    };
+
     youtubeInput.addEventListener('input', () => {
         const url = youtubeInput.value.trim();
         if (isValidYoutubeUrl(url)) {
@@ -152,6 +249,17 @@ export const createSongSelect = (
             fileNameDisplay.textContent = '';
         }
     });
+
+    cookiesUploadBtn.addEventListener('click', () => {
+        void uploadCookiesFile();
+    });
+    cookiesClearBtn.addEventListener('click', () => {
+        setStoredCookieHandle(null, false);
+        cookiesFileInput.value = '';
+        refreshCookieUi();
+    });
+
+    refreshCookieUi();
 
     const formatDuration = (sec: number): string => {
         const s = Math.max(0, Math.floor(sec));

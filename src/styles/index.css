@@ -267,6 +267,62 @@ body {
   text-align: left;
 }
 
+.song-select__cookies {
+  margin-top: 0.8rem;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  background: rgba(0,0,0,0.22);
+  padding: 0.6rem 0.75rem;
+}
+
+.song-select__cookies-summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.song-select__cookies-body {
+  margin-top: 0.55rem;
+}
+
+.song-select__cookies-desc {
+  color: var(--text-dim);
+  font-size: 0.86rem;
+  line-height: 1.35;
+  margin-bottom: 0.6rem;
+}
+
+.song-select__cookies-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.song-select__cookies-row input[type="file"] {
+  max-width: 320px;
+}
+
+.song-select__cookies-remember {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+}
+
+.song-select__cookies-status {
+  margin-top: 0.55rem;
+  font-size: 0.9rem;
+  color: rgba(255,255,255,0.86);
+}
+
+.song-select__cookies-status.error {
+  color: #ffb1b1;
+}
+
 .song-select__label {
   display: block;
   font-size: 0.85rem;
