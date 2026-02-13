@@ -231,7 +231,9 @@ export const generateMap = async (
                         : 8192;
             const primaryProfiles = analyzeSpectralProfiles(buffer, samplePoints, { fftSize: primaryFftSize });
             const shouldDualSpectral = (MAPGEN_MAX_ANALYSIS || qualityAggressive)
-                && perf.tier !== 'low'
+                && perf.tier === 'high'
+                && (difficulty === 'hard' || difficulty === 'expert')
+                && duration <= 900
                 && samplePoints.length >= 56;
             if (shouldDualSpectral) {
                 const secondaryFftSize = primaryFftSize >= 8192 ? 4096 : primaryFftSize === 4096 ? 2048 : 4096;
@@ -417,9 +419,32 @@ export const generateMap = async (
     // Candidate A: 보수형 (싱크 안정)
     const conservativeFinal = finalizeCandidate(scaledNotes);
 
-    // Candidate B: 섹션/온셋 강조형 (신뢰도 충분할 때만)
+    const conservativeScore = evaluateMapCandidateQuality(
+        conservativeFinal,
+        onsetTimes,
+        onsetStrengths,
+        sections,
+        resolvedBpm,
+        difficulty,
+        songFeatures
+    );
     let enrichedFinal = conservativeFinal;
-    if (allowEnrichedCandidate) {
+    let enrichedScore = -Infinity;
+
+    const energeticThemeBias = songFeatures.driveScore >= 0.58
+        || songFeatures.percussiveFocus >= 0.6
+        || songFeatures.bassWeight >= 0.58;
+
+    const goodEnoughGate: Record<Difficulty, number> = {
+        easy: 0.76,
+        normal: 0.74,
+        hard: 0.7,
+        expert: 0.66,
+    };
+    const conservativeGoodEnough = conservativeScore >= goodEnoughGate[difficulty];
+
+    // Candidate B: 섹션/온셋 강조형 (보수형이 충분히 좋지 않거나, 에너지가 강한 곡에서만 생성)
+    if (allowEnrichedCandidate && (!conservativeGoodEnough || energeticThemeBias)) {
         const sectionSelected = applySectionRhythmSourceSelection(
             scaledNotes,
             sections,
@@ -463,19 +488,7 @@ export const generateMap = async (
             songFeatures
         );
         enrichedFinal = finalizeCandidate(detailedMusicalSeed);
-    }
-
-    const conservativeScore = evaluateMapCandidateQuality(
-        conservativeFinal,
-        onsetTimes,
-        onsetStrengths,
-        sections,
-        resolvedBpm,
-        difficulty,
-        songFeatures
-    );
-    const enrichedScore = allowEnrichedCandidate
-        ? evaluateMapCandidateQuality(
+        enrichedScore = evaluateMapCandidateQuality(
             enrichedFinal,
             onsetTimes,
             onsetStrengths,
@@ -483,12 +496,8 @@ export const generateMap = async (
             resolvedBpm,
             difficulty,
             songFeatures
-        )
-        : -Infinity;
-
-    const energeticThemeBias = songFeatures.driveScore >= 0.58
-        || songFeatures.percussiveFocus >= 0.6
-        || songFeatures.bassWeight >= 0.58;
+        );
+    }
     const preferEnrichedForEnergy = allowEnrichedCandidate
         && energeticThemeBias
         && enrichedFinal.length >= conservativeFinal.length * 0.82
@@ -7423,6 +7432,17 @@ const resolveLongNoteCollisions = (
     notes: readonly NoteData[],
     bpm: number
 ): NoteData[] => {
+    if (notes.length <= 1 || bpm <= 0) return [...notes];
+    let hasLong = false;
+    for (const n of notes) {
+        if ((n.type === 'slide' || n.type === 'hold') && (n.duration ?? 0) > 0) {
+            hasLong = true;
+            break;
+        }
+    }
+    if (!hasLong) {
+        return dedupeNotes([...notes], 0.04);
+    }
     const beatInterval = 60 / bpm;
     const laneBusyUntil = [-Infinity, -Infinity];
     const sorted = [...notes].sort((a, b) => a.time - b.time);
@@ -8493,15 +8513,23 @@ const resolveVisualNoteOverlaps = (
 
     const longNotes = sorted
         .filter(n => (n.type === 'slide' || n.type === 'hold') && (n.duration ?? 0) > 0)
-        .map(n => ({
-            start: n.time,
-            end: n.time + normalizeLongDuration(n.type, n.duration, beatInterval),
-            lane: n.lane,
-            type: n.type as string,
-            toLane: n.type === 'slide' ? resolveSlideTargetLane(n) : n.lane,
-            batonMidStart: n.time + normalizeLongDuration(n.type, n.duration, beatInterval) * 0.42,
-            batonMidEnd: n.time + normalizeLongDuration(n.type, n.duration, beatInterval) * 0.62,
-        }));
+        .map(n => {
+            const dur = normalizeLongDuration(n.type, n.duration, beatInterval);
+            const toLane = n.type === 'slide' ? resolveSlideTargetLane(n) : n.lane;
+            return {
+                start: n.time,
+                end: n.time + dur,
+                lane: n.lane,
+                type: n.type as string,
+                toLane,
+                batonMidStart: n.time + dur * 0.42,
+                batonMidEnd: n.time + dur * 0.62,
+            };
+        });
+
+    if (longNotes.length === 0) {
+        return dedupeNotes(sorted, 0.034);
+    }
 
     const filtered = sorted.filter(n => {
         if (n.type !== 'tap') return true;
