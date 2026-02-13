@@ -99,7 +99,16 @@ app.post('/api/youtube/audio', async (req, res) => {
         res.send(result.buffer);
     } catch (err) {
         const message = err instanceof Error ? err.message : '알 수 없는 오류';
-        res.status(500).json({ error: `오디오 추출 실패: ${message}` });
+        const lower = message.toLowerCase();
+        if (lower.includes('봇/로그인 확인') || lower.includes('sign in') || lower.includes('captcha') || lower.includes('bot')) {
+            res.status(429).json({ error: `오디오 추출 실패: ${message}` });
+            return;
+        }
+        if (lower.includes('타임아웃') || lower.includes('timeout')) {
+            res.status(504).json({ error: `오디오 추출 실패: ${message}` });
+            return;
+        }
+        res.status(502).json({ error: `오디오 추출 실패: ${message}` });
     }
 });
 

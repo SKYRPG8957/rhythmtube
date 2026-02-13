@@ -594,6 +594,7 @@ const initApp = async (): Promise<void> => {
             const fetchYoutubeAudio = async (): Promise<ArrayBuffer> => {
                 let lastErr: Error | null = null;
                 for (let attempt = 0; attempt < 4; attempt++) {
+                    let retryableError = true;
                     const controller = new AbortController();
                     const timeout = setTimeout(() => controller.abort(), 95000);
                     try {
@@ -607,7 +608,10 @@ const initApp = async (): Promise<void> => {
                         clearTimeout(timeout);
                         if (!response.ok) {
                             const errData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-                            throw new Error(errData.error || `오디오 추출 실패 (HTTP ${response.status})`);
+                            const msg = errData.error || `오디오 추출 실패 (HTTP ${response.status})`;
+                            const e = new Error(msg) as Error & { retryable?: boolean };
+                            e.retryable = response.status >= 500 || response.status === 429 || response.status === 408;
+                            throw e;
                         }
                         const ct = (response.headers.get('content-type') || '').toLowerCase();
                         const ab = await response.arrayBuffer();
@@ -623,7 +627,9 @@ const initApp = async (): Promise<void> => {
                     } catch (error) {
                         clearTimeout(timeout);
                         lastErr = error instanceof Error ? error : new Error(String(error));
+                        retryableError = !!((lastErr as Error & { retryable?: boolean }).retryable ?? true);
                     }
+                    if (!retryableError) break;
                     if (attempt < 3) {
                         loadingOverlay.update(`YouTube 재시도 중... (${attempt + 2}/4)`, 0.06 + attempt * 0.04);
                         await new Promise(resolve => setTimeout(resolve, 800 + attempt * 600));
@@ -633,8 +639,11 @@ const initApp = async (): Promise<void> => {
             };
 
             // 백엔드에서 오디오 가져오기 (재시도 포함)
-            loadingOverlay.update('오디오 디코딩 중...', 0.3);
+            loadingOverlay.update('YouTube 오디오 추출 중...', 0.12);
             const arrayBuffer = await fetchYoutubeAudio();
+
+            // 실제 디코딩은 fetch 완료 이후 시작됨
+            loadingOverlay.update('오디오 디코딩 중...', 0.32);
             await audioManager.loadAudio(arrayBuffer);
             const loadedBuffer = audioManager.getBuffer();
             if (loadedBuffer) {
@@ -650,6 +659,7 @@ const initApp = async (): Promise<void> => {
             currentDifficulty = diff;
             infiniteMode = selectState.isInfiniteMode();
             const buffer = audioManager.getBuffer()!;
+            loadingOverlay.update('맵 분석 준비 중...', 0.36);
             currentMap = await generateMapFast(buffer, diff, (stage, progress) => {
                 loadingOverlay.update(stage, 0.3 + progress * 0.7);
             });
