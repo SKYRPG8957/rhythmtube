@@ -1,0 +1,9 @@
+node_modules/
+dist/
+tmp-*/
+.DS_Store
+*.log
+*.tmp
+
+# local tooling state
+.claude/

@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: rhythmtube
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
