@@ -197,7 +197,9 @@ const parseCsvEnv = (value: string | undefined): string[] =>
         .map(s => s.trim())
         .filter(Boolean);
 
-const DEFAULT_PLAYER_CLIENTS = ['android', 'ios', 'mweb', 'web'];
+// Order matters: try clients that often work anonymously first.
+// Keep list small to reduce request volume per extraction.
+const DEFAULT_PLAYER_CLIENTS = ['tv', 'android_vr', 'mweb', 'android', 'ios', 'web'];
 const getPlayerClients = (): string[] => {
     const fromEnv = parseCsvEnv(process.env.YTDLP_PLAYER_CLIENTS);
     return fromEnv.length > 0 ? fromEnv : DEFAULT_PLAYER_CLIENTS;
@@ -543,15 +545,18 @@ export const extractYoutubeAudio = async (
     url: string,
     opts?: { preferMp4Only?: boolean; cookiesTxt?: string | null }
 ): Promise<{ buffer: Buffer; contentType: string }> => {
+    const useCache = !opts?.cookiesTxt;
     const cacheKey = `${opts?.preferMp4Only ? 'mp4' : 'any'}:${url}`;
-    const cached = getCachedAudio(cacheKey);
-    if (cached) {
-        return cached;
-    }
+    if (useCache) {
+        const cached = getCachedAudio(cacheKey);
+        if (cached) {
+            return cached;
+        }
 
-    const inflight = inflightAudios.get(cacheKey);
-    if (inflight) {
-        return await inflight;
+        const inflight = inflightAudios.get(cacheKey);
+        if (inflight) {
+            return await inflight;
+        }
     }
 
     const task = withExtractSemaphore(async (): Promise<{ buffer: Buffer; contentType: string }> => {
@@ -673,13 +678,19 @@ export const extractYoutubeAudio = async (
         }
     });
 
-    inflightAudios.set(cacheKey, task);
+    if (useCache) {
+        inflightAudios.set(cacheKey, task);
+    }
     try {
         const result = await task;
-        setCachedAudio(cacheKey, result);
+        if (useCache) {
+            setCachedAudio(cacheKey, result);
+        }
         return result;
     } finally {
-        inflightAudios.delete(cacheKey);
+        if (useCache) {
+            inflightAudios.delete(cacheKey);
+        }
     }
 };
 
