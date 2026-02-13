@@ -54,6 +54,19 @@ PORT=3001 npm run start
 - `PORT` (server listen port, default `3001`)
 - `VITE_API_BASE_URL` (optional; only needed if frontend is hosted separately)
 
+### YouTube Extraction (Optional but Recommended)
+
+YouTube may block cloud IPs and return bot-check / sign-in prompts. Without additional auth, some videos will fail.
+
+- `YTDLP_PLAYER_CLIENTS` (optional): comma-separated client list, default `android,ios,mweb,web`
+  - Example: `android,ios,mweb,web`
+- `YTDLP_COOKIES_B64` (optional, secret): Base64 of a Netscape-format `cookies.txt` exported from your browser.
+  - Server writes it to `/tmp/rhythmtube-ytdlp-cookies.txt` at runtime and passes `--cookies` to yt-dlp.
+  - Do NOT commit cookies to the repo.
+- `YTDLP_COOKIES_PATH` (optional): path to a cookies.txt file inside the container.
+
+Security note: cookies are sensitive. Prefer using Render "Secret" env vars and rotate if leaked.
+
 If frontend and backend are deployed as one service/domain, do not set `VITE_API_BASE_URL`.
 
 ## Health Check
